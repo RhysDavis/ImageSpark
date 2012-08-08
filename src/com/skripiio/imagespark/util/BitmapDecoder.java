@@ -1,11 +1,15 @@
 package com.skripiio.imagespark.util;
 
+import java.io.IOException;
+import java.io.InputStream;
+
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.util.Log;
 
 /** Bitmap Decoder */
 public class BitmapDecoder {
-	
+
 	/**
 	 * Decode and sample down a bitmap from a file to the requested width and
 	 * height.
@@ -20,21 +24,32 @@ public class BitmapDecoder {
 	 *         ratio and dimensions that are equal to or greater than the
 	 *         requested width and height
 	 */
-	public static synchronized Bitmap decodeSampledBitmapFromFile(
-			String filename, int reqWidth, int reqHeight) {
+	public static Bitmap decodeSampledBitmapFromFile(
+			InputStream filename, int reqWidth, int reqHeight) {
+		try {
+			// First decode with inJustDecodeBounds=true to check dimensions
+			final BitmapFactory.Options options = new BitmapFactory.Options();
+			options.inJustDecodeBounds = true;
+			BitmapFactory.decodeStream(filename, null, options);
+			try {
+				filename.reset();
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
 
-		// First decode with inJustDecodeBounds=true to check dimensions
-		final BitmapFactory.Options options = new BitmapFactory.Options();
-		options.inJustDecodeBounds = true;
-		BitmapFactory.decodeFile(filename, options);
+			// Calculate inSampleSize
+			options.inSampleSize = calculateInSampleSize(options, reqWidth,
+					reqHeight);
 
-		// Calculate inSampleSize
-		options.inSampleSize = calculateInSampleSize(options, reqWidth,
-				reqHeight);
-
-		// Decode bitmap with inSampleSize set
-		options.inJustDecodeBounds = false;
-		return BitmapFactory.decodeFile(filename, options);
+			// Decode bitmap with inSampleSize set
+			options.inJustDecodeBounds = false;
+			return BitmapFactory.decodeStream(filename, null, options);
+		} catch (OutOfMemoryError e) {
+			// OUT OF MEMORY ERROR
+			e.printStackTrace();
+			return decodeSampledBitmapFromFile(filename, reqWidth, reqHeight);
+		}
 	}
 
 	/**

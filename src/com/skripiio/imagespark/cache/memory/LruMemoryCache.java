@@ -45,6 +45,14 @@ public class LruMemoryCache implements MemoryCache {
 		initializeLruCache(capacity);
 	}
 
+	public boolean isInCache(String pKey) {
+		if (mCache.get(pKey) != null) {
+			return true;
+		}
+
+		return false;
+	}
+
 	/**
 	 * Creates the LruCache. Trashes it and reinitializes it if it's already
 	 * being used.
@@ -58,6 +66,23 @@ public class LruMemoryCache implements MemoryCache {
 			protected int sizeOf(String key, Bitmap bitmap) {
 				return bitmap.getRowBytes() * bitmap.getHeight();
 			}
+
+			@Override
+			protected void entryRemoved(boolean evicted, String key,
+					Bitmap oldValue, Bitmap newValue) {
+				Log.e("MemoryCache",
+						"BITMAP REMOVED FROM CACHE: "
+								+ this.size()
+								+ " / "
+								+ this.maxSize()
+								+ " ~"
+								+ ((float) this.size() / (float) this.maxSize())
+								* 100f + "% full");
+				oldValue.recycle();
+				//System.gc();
+				super.entryRemoved(evicted, key, oldValue, newValue);
+			}
+
 		};
 	}
 

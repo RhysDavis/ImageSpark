@@ -41,7 +41,14 @@ public class Utils {
 		for (String key : map.keySet()) {
 			values.add(key);
 		}
-		return values;
+		
+		// reverse values
+		ArrayList<String> rightValues = new ArrayList<String>();
+		for (int i = values.size()-1; i >= 0; i--) {
+			rightValues.add(values.get(i));
+		}
+		
+		return rightValues;
 	}
 
 	public static <K, V extends Comparable<? super V>> Map<K, V> sortByValue(

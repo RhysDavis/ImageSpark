@@ -1,24 +1,35 @@
 package com.skripiio.imagespark;
 
+import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
+import android.graphics.Bitmap.CompressFormat;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.graphics.drawable.LevelListDrawable;
 import android.util.Log;
 import android.widget.ImageView;
 
 import com.imagespark.imagespark.BuildConfig;
 import com.skripiio.imagespark.cache.disk.DiskLruCache;
+import com.skripiio.imagespark.cache.disk.DiskLruCache.Snapshot;
 import com.skripiio.imagespark.cache.memory.LruMemoryCache;
 import com.skripiio.imagespark.cache.memory.MemoryCache;
+import com.skripiio.imagespark.util.BitmapDecoder;
+import com.skripiio.imagespark.util.BitmapDownloader;
 import com.skripiio.imagespark.util.CompatibleAsyncTask;
 import com.skripiio.imagespark.util.Utils;
 
@@ -32,22 +43,74 @@ public class ImageLoader {
 	private MemoryCache mMemoryCache;
 
 	/** Disk Cache */
-	private DiskLruCache mDiskCache;
 	private File mDiskCacheDir;
 	private static final int DISK_CACHE_SIZE_IN_MB = 20;
 
+	/**
+	 * The Level Threshold is used to determine whether an object should be
+	 * stored in memory even if it's not being displayed. The threshold reveals
+	 * the lowest level to be stored in memory, any level after the threshold
+	 * will only be stored in local memory if it's being displayed in an
+	 * imageview
+	 */
+	private int mLevelThreshold = 1;
+
+	private boolean mExitTasksEarly = false;
+
 	/** Loading Bitmap */
-	private BitmapDrawable mLoadingBitmap;
+	private Bitmap mLoadingBitmap;
 
 	private ArrayList<Integer> mLevelsToCancel;
 
-	public ImageLoader(Context pContext, BitmapDrawable pLoadingBitmap) {
+	/**
+	 * Thread Pool Executors TODO: Abstract to allow for multiple pools based on
+	 * user options
+	 */
+	private ThreadPoolExecutor mThreadPool;
+	private ArrayBlockingQueue<Runnable> mQueue;
+	private static final int THREAD_POOL_CORE_SIZE = 1;
+	private static final int THREAD_POOL_MAX_SIZE = 1;
+	private static final int THREAD_POOL_KEEP_ALIVE_IN_SECONDS = 100;
+
+	private ThreadPoolExecutor mLargeDecoderThreadPool;
+	private ArrayBlockingQueue<Runnable> mLargeDecoderQueue;
+	private static final int THREAD_POOL_LARGE_DECODER_CORE_SIZE = 1;
+	private static final int THREAD_POOL_LARGE_DECODER_MAX_SIZE = 1;
+	private static final int THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS = 100;
+
+	public ImageLoader(Context pContext, Bitmap pLoadingBitmap) {
 		mContext = pContext;
+
 		mTasks = new ArrayList<ImageLoader.BitmapLevelListAsyncTask>();
 		mLevelsToCancel = new ArrayList<Integer>();
-		mMemoryCache = new LruMemoryCache(mContext, 60);
+		mLevelsToCancel.add(2);
+		mMemoryCache = new LruMemoryCache(mContext, 20);
 		mLoadingBitmap = pLoadingBitmap;
 		mDiskCacheDir = Utils.getDiskCacheDir(pContext, "ImageSpark_Cache");
+
+		mQueue = new ArrayBlockingQueue<Runnable>(10000, true);
+
+		mThreadPool = new ThreadPoolExecutor(THREAD_POOL_CORE_SIZE,
+				THREAD_POOL_MAX_SIZE, THREAD_POOL_KEEP_ALIVE_IN_SECONDS,
+				TimeUnit.MILLISECONDS, mQueue);
+
+		mLargeDecoderQueue = new ArrayBlockingQueue<Runnable>(10000, true);
+
+		mLargeDecoderThreadPool = new ThreadPoolExecutor(
+				THREAD_POOL_LARGE_DECODER_CORE_SIZE,
+				THREAD_POOL_LARGE_DECODER_MAX_SIZE,
+				THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS,
+				TimeUnit.MILLISECONDS, mLargeDecoderQueue);
+	}
+
+	public void setExitTasksEarly(boolean pExitTasksEarly) {
+		mExitTasksEarly = pExitTasksEarly;
+	}
+	
+	public void cancelAllTasks() {
+		for (int i = 0; i < mTasks.size(); i++) {
+			mTasks.get(i).cancel(true);
+		}
 	}
 
 	/**
@@ -55,8 +118,8 @@ public class ImageLoader {
 	 * Downloads both urls, storing all urls in the disk cache, but only
 	 * decoding the smallest index in the memory cache
 	 */
-	public void loadImage(Map<String, Integer> mLoadLevelMap, int pImageViewSize) {
-
+	public void loadImage(Map<String, Integer> pLoadLevelMap, int pImageViewSize) {
+		loadImage(null, pLoadLevelMap, pImageViewSize);
 	}
 
 	/**
@@ -74,8 +137,9 @@ public class ImageLoader {
 			Map<String, Integer> pLoadLevelMap) {
 		Drawable d = pImageView.getDrawable();
 		if (d != null) {
-			if (d instanceof BitmapLevelListDrawable) {
-				BitmapLevelListDrawable drawable = (BitmapLevelListDrawable) d;
+			d = (AsyncBitmapDrawable) d;
+			if (d instanceof AsyncBitmapDrawable) {
+				AsyncBitmapDrawable drawable = (AsyncBitmapDrawable) d;
 				Map<String, Integer> imageViewLevels = drawable.getUrlLevels();
 
 				// if the urls are the equivalent
@@ -97,7 +161,10 @@ public class ImageLoader {
 										"\t\tCancelling Url: " + task.getUrl());
 							}
 							task.cancel(true);
+							task.detachImageView();
 							mTasks.remove(task);
+							mQueue.remove(task);
+							mLargeDecoderQueue.remove(task);
 						} else {
 							if (BuildConfig.DEBUG) {
 								Log.d(TAG,
@@ -107,11 +174,18 @@ public class ImageLoader {
 						}
 					}
 				}
+			} else {
+				Log.e(TAG, "Imageview drawable not correct instance. Instead: "
+						+ d.getClass().getCanonicalName());
 			}
+		} else {
+			Log.e(TAG, "Imageview Has No Drawable");
 		}
 
 		return false;
 	}
+
+	private int mImageViewCounter = 0;
 
 	/**
 	 * Load a series of images. Levels should be greater than 0, as 0 is the
@@ -120,13 +194,16 @@ public class ImageLoader {
 	public void loadImage(ImageView pImageView,
 			Map<String, Integer> pLoadLevelMap, int pImageViewSize) {
 		long start = System.currentTimeMillis();
-		if (BuildConfig.DEBUG) {
-			Log.d(TAG, "==== Loading Image ====");
-		}
+		Log.d(TAG, "==== Loading Image ====");
 		if (pImageView != null) {
-			if (BuildConfig.DEBUG) {
-				Log.d(TAG, "\tImageView Found");
+			if (pImageView.getTag() == null) {
+				pImageView.setTag(mImageViewCounter + "");
+				mImageViewCounter++;
 			}
+		}
+
+		if (pImageView != null) {
+
 			// check if the map matches the current map associated with the
 			// imageview. If not, disassociate the imageview from the tasks, and
 			// cancel cancellable tasks
@@ -147,9 +224,6 @@ public class ImageLoader {
 
 		// check memory cache for urls, starting from highest index
 		for (String url : urls) {
-			if (BuildConfig.DEBUG) {
-				Log.d(TAG, "\tChecking Url: " + url);
-			}
 			memCacheBitmap = getImageFromMemCache(url);
 
 			if (memCacheBitmap != null) {
@@ -162,53 +236,41 @@ public class ImageLoader {
 				break;
 
 			} else {
-				if (BuildConfig.DEBUG) {
-					Log.d(TAG, "\tBitmap not in Memory Cache");
-				}
 				// everytime memcache is not found:
 				// check our task pool if there is a current task trying to
 				// loading the url
 				BitmapLevelListAsyncTask task = getTask(url);
 
 				if (task != null) {
-					if (BuildConfig.DEBUG) {
-						Log.d(TAG, "\tTask found for Url");
-					}
 					// if there is, reference the task for later use
 					runningTasks.add(task);
 				} else {
-					if (BuildConfig.DEBUG) {
-						Log.d(TAG, "\tNo task found for Url");
-					}
+
 					// if not, create a new task and reference
 					// check if that particular state level should be
 					// cancellable
 					boolean cancellable = false;
 					if (mLevelsToCancel.contains(pLoadLevelMap.get(url))) {
-						if (BuildConfig.DEBUG) {
-							Log.d(TAG, "\tAsyncTask will be cancellable");
-						}
 						cancellable = true;
 					}
 
 					BitmapLevelListAsyncTask newTask;
 					if (pImageView != null) {
-						if (BuildConfig.DEBUG) {
-							Log.d(TAG,
-									"\tLaunching AsyncTask with ImageView in param");
-						}
 						newTask = new BitmapLevelListAsyncTask(pImageView, url,
-								pLoadLevelMap.get(url), cancellable);
+								pImageViewSize, pLoadLevelMap.get(url),
+								cancellable);
 					} else {
-						if (BuildConfig.DEBUG) {
-							Log.d(TAG,
-									"\tLaunching AsyncTask without ImageView in param");
-						}
 						newTask = new BitmapLevelListAsyncTask(url,
-								pLoadLevelMap.get(url), cancellable);
+								pImageViewSize, pLoadLevelMap.get(url),
+								cancellable);
 					}
+
 					// start running the new task
-					newTask.execute();
+					if (cancellable) {
+						newTask.executeOnExecutor(mLargeDecoderThreadPool);
+					} else {
+						newTask.executeOnExecutor(mThreadPool);
+					}
 
 					mTasks.add(newTask);
 					runningTasks.add(newTask);
@@ -225,19 +287,28 @@ public class ImageLoader {
 			weakReferenceTasks
 					.add(new WeakReference<ImageLoader.BitmapLevelListAsyncTask>(
 							task));
+			task.detachImageView();
+			if (pImageView != null) {
+				task.attachImageView(pImageView);
+			}
 		}
 
-		BitmapLevelListDrawable drawable = new BitmapLevelListDrawable(
-				weakReferenceTasks, pLoadLevelMap);
-		drawable.addLevel(0, 0, mLoadingBitmap); // add loading bitmap
-		pImageView.setImageDrawable(drawable);
+		if (pImageView != null) {
+			AsyncBitmapDrawable drawable = new AsyncBitmapDrawable(
+					mContext.getResources(), mLoadingBitmap,
+					weakReferenceTasks, pLoadLevelMap, 0);
 
-		// if a memcache bitmap was found, place that in the imageview at it's
-		// index.
-		if (memCacheBitmap != null) {
-			setImageBitmap(pImageView, memCacheBitmap,
-					pLoadLevelMap.get(memCacheBitmapUrl));
+			pImageView.setImageDrawable(drawable);
+
+			// if a memcache bitmap was found, place that in the imageview at
+			// it's
+			// index.
+			if (memCacheBitmap != null) {
+				setImageBitmap(pImageView, memCacheBitmap,
+						pLoadLevelMap.get(memCacheBitmapUrl));
+			}
 		}
+
 		long finish = System.currentTimeMillis();
 		Log.d(TAG, "==== Finished in " + (finish - start) + "ms ====");
 	}
@@ -301,21 +372,29 @@ public class ImageLoader {
 	 * TODO replace AsyncDrawable with this. Since there are multiple URLs to
 	 * load
 	 */
-	public class BitmapLevelListDrawable extends LevelListDrawable {
+	public class AsyncBitmapDrawable extends BitmapDrawable {
 
 		ArrayList<WeakReference<BitmapLevelListAsyncTask>> mTasks;
 
 		private Map<String, Integer> mUrlLevels;
 
-		public BitmapLevelListDrawable(
+		private int mLevel;
+
+		public AsyncBitmapDrawable(Resources pResources, Bitmap pBitmap,
 				ArrayList<WeakReference<BitmapLevelListAsyncTask>> pTasks,
-				Map<String, Integer> pUrlLevels) {
+				Map<String, Integer> pUrlLevels, int pCurrentLevel) {
+			super(pResources, pBitmap);
 			mTasks = pTasks;
 			mUrlLevels = pUrlLevels;
+			mLevel = pCurrentLevel;
 		}
 
 		public Map<String, Integer> getUrlLevels() {
 			return mUrlLevels;
+		}
+
+		public int getCurrentLevel() {
+			return mLevel;
 		}
 
 	}
@@ -325,35 +404,54 @@ public class ImageLoader {
 	 * inserted into the ImageBitmap is greater than the current level set on
 	 * the bitmap, the level will be changed
 	 */
-	private void setImageBitmap(ImageView pImageView, Bitmap pBitmap, int pIndex) {
+	private void setImageBitmap(final ImageView pImageView, Bitmap pBitmap,
+			int pIndex) {
+		Log.d(TAG, "Setting Bitmap into ImageView " + pImageView.getTag());
 		// always assume the imageview has a level-list drawable.
+
+		// pImageView.setImageBitmap(pBitmap);
+
 		Drawable imageDrawable = pImageView.getDrawable();
-		if (imageDrawable instanceof BitmapLevelListDrawable) {
 
-			BitmapLevelListDrawable drawable = (BitmapLevelListDrawable) imageDrawable;
+		if (imageDrawable instanceof AsyncBitmapDrawable) {
 
-			// add the level at the index
-			drawable.addLevel(pIndex, pIndex,
-					new BitmapDrawable(mContext.getResources(), pBitmap));
+			AsyncBitmapDrawable drawable = (AsyncBitmapDrawable) imageDrawable;
 
-			if (drawable.getLevel() < pIndex) {
-				drawable.setLevel(pIndex);
+			if (drawable.getCurrentLevel() < pIndex) {
+				drawable = new AsyncBitmapDrawable(mContext.getResources(),
+						pBitmap, drawable.mTasks, drawable.mUrlLevels, pIndex);
+				pImageView.setImageDrawable(drawable);
 			}
+
 		}
 	}
+
+	public static DiskLruCache mCache;
+
+	public static DiskLruCache getCache(File pDir) {
+		if (mCache == null) {
+			try {
+				mCache = DiskLruCache.open(pDir, 0, 1,
+						DISK_CACHE_SIZE_IN_MB * 1024 * 1024);
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+
+		return mCache;
+	}
+
+	public int mTaskNums = 0;
 
 	public class BitmapLevelListAsyncTask extends
 			CompatibleAsyncTask<Void, Void, Bitmap> {
 
 		private WeakReference<ImageView> mImageViewReference;
-
 		private boolean mCancellable = false;
-
 		private String mUrl;
-
-		public String getUrl() {
-			return mUrl;
-		}
+		private int mImageSize;
+		private int mStateLevel;
+		private int mTaskNumber;
 
 		/**
 		 * Creates an AsyncTask. If no ImageView has been set by the time the
@@ -365,11 +463,15 @@ public class ImageLoader {
 		 *            unless there is an ImageView present by the time the
 		 *            loading is complete
 		 */
-		public BitmapLevelListAsyncTask(String pUrl, int pStateLevel,
-				boolean pIsCancellable) {
+		public BitmapLevelListAsyncTask(String pUrl, int pImageSize,
+				int pStateLevel, boolean pIsCancellable) {
+			mStateLevel = pStateLevel;
+			mImageSize = pImageSize;
 			mCancellable = pIsCancellable;
 			mUrl = pUrl;
 			mImageViewReference = new WeakReference<ImageView>(null);
+			mTaskNumber = mTaskNums + 1;
+			mTaskNums++;
 		}
 
 		/**
@@ -379,56 +481,180 @@ public class ImageLoader {
 		 *            the ImageView to load the bitmap into
 		 */
 		public BitmapLevelListAsyncTask(ImageView pImageView, String pUrl,
-				int pStateLevel, boolean pIsCancellable) {
+				int pImageSize, int pStateLevel, boolean pIsCancellable) {
+			mStateLevel = pStateLevel;
+			mImageSize = pImageSize;
 			mCancellable = pIsCancellable;
 			mUrl = pUrl;
 			mImageViewReference = new WeakReference<ImageView>(pImageView);
+			mTaskNumber = mTaskNums + 1;
+			mTaskNums++;
 		}
+		
+		long start;
+		long finish;
 
 		@Override
 		protected void onPreExecute() {
-			Log.d(TAG + " Task", "AsyncTask - Starting");
+			// put in loading thing
+			start = System.currentTimeMillis();
+		}
 
+		private boolean checkCancelled() {
+			if (!isCancelled() && !mExitTasksEarly) {
+				return false;
+			} else {
+				Log.i("ImageSpark", "AsyncTask " + mTaskNumber + " - Cancelled");
+				mTasks.remove(this);
+				return true;
+			}
 		}
 
 		@Override
 		protected Bitmap doInBackground(Void... params) {
-			// check the disk cache for image
-			Log.d(TAG + " Task", "AsyncTask - Checking Disk Cache");
-			try {
-				DiskLruCache cache = DiskLruCache.open(mDiskCacheDir, 0, 1,
-						DISK_CACHE_SIZE_IN_MB * 1024 * 1024);
-				cache.close();
-			} catch (IOException e) {
-				Log.d(TAG + " Task", "AsyncTask - Failed to open Disk Cache! "
-						+ e.getMessage());
-				e.printStackTrace();
+			if (checkCancelled()) {
+				return null;
 			}
+			// check the disk cache for image
+			Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+					+ " - Checking Disk Cache");
+			try {
+				DiskLruCache cache = getCache(mDiskCacheDir);
+				Snapshot snapshot = cache.get(mUrl);
+				if (snapshot != null) {
+					Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+							+ "- Url found in Disk Cache!");
+				} else {
+					Log.v(TAG + " Task",
+							"AsyncTask - Url not found in Disk Cache");
+				}
 
-			// if not in disk cache, download it
+				if (checkCancelled()) {
+					return null;
+				}
 
-			// once downloaded, decode it
+				Bitmap godBitmap = null;
+				InputStream godStream = null;
+				if (snapshot == null) {
+					Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+							+ " - Downloading...");
+					godStream = BitmapDownloader.downloadBitmap(mContext, mUrl);
+					if (checkCancelled()) {
+						return null;
+					}
 
-			// once decoded, check if ImageView is attached
+					// duplicate inputstream for caching and returning
+//					ByteArrayOutputStream baos = new ByteArrayOutputStream();
+//					byte[] buf = new byte[1024];
+//					int n = 0;
+//					while ((n = godStream.read(buf)) >= 0)
+//						baos.write(buf, 0, n);
+//					byte[] content = baos.toByteArray();
 
-			// if ImageView is still attached or if NOT largeImage, put in
-			// memory cache
+
+					Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+							+ " - Decoding...");
+					long start = System.currentTimeMillis();
+					// once downloaded, decode it
+					godBitmap = BitmapDecoder.decodeSampledBitmapFromFile(
+							godStream, mImageSize, mImageSize);
+					long finish = System.currentTimeMillis();
+					Log.e(TAG + " Task", "AsyncTask " + mTaskNumber
+							+ " - Decoded to ImageView size in " + (finish-start) + "ms");
+					// put in disk cache
+					if (godBitmap != null) {
+//						long startCache = System.currentTimeMillis();
+//						Log.e("ImageSpark", "AsyncTask " + mTaskNumber
+//									+ "Compressing Bitmap for Cache");
+//						ByteArrayOutputStream bos = new ByteArrayOutputStream(); 
+//						godBitmap.compress(CompressFormat.PNG, 0 /*ignored for PNG*/, bos); 
+//						byte[] bitmapdata = bos.toByteArray();
+//						ByteArrayInputStream bs = new ByteArrayInputStream(bitmapdata);
+//						cache.put(mCache, mUrl, bs);
+//						long finishCache = System.currentTimeMillis();
+//						Log.e("ImageSpark", "AsyncTask " + mTaskNumber
+//									+ "Compressed: " + (finishCache - startCache) +"ms");
+					}
+				} else {
+					Log.e("ImageLoader", "Fetching from Cache");
+					final BufferedInputStream buffIn = new BufferedInputStream(
+							snapshot.getInputStream(0), Utils.IO_BUFFER_SIZE);
+					godBitmap = BitmapDecoder.decodeSampledBitmapFromFile(
+							buffIn, mImageSize, mImageSize);
+					snapshot.close();
+				}
+
+				// once decoded, check if ImageView is attached
+				if (godBitmap != null) {
+					long startMemCache = System.currentTimeMillis();
+					if (isImageViewAttached()) {
+						Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+								+ " - ImageView "
+								+ mImageViewReference.get().getTag()
+								+ " is attached");
+						// if ImageView is still in memory, put the image in
+						// memory
+
+						mMemoryCache.put(mUrl, godBitmap);
+					} else {
+						Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+								+ " - ImageView is not attached");
+						// if the url is below the level threshold, put it into
+						// memory cache
+						if (mStateLevel <= mLevelThreshold) {
+							Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+									+ " - Url is below the level threshold");
+							mMemoryCache.put(mUrl, godBitmap);
+						}
+					}
+					long finishMemCache = System.currentTimeMillis();
+					Log.e("ImageSpark", "AsyncTask " + mTaskNumber
+							+ " Placed in ImageCache in " + (finishMemCache - startMemCache) +"ms");
+				}
+
+				return godBitmap;
+
+			} catch (IOException e) {
+				Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+						+ " - Failed to open Disk Cache! " + e.getMessage());
+				e.printStackTrace();
+			} catch (OutOfMemoryError e) {
+				// OUT OF MEMORY OCCURED!!!
+				// we want this to NEVER happen, but unfortunately I have no
+				// solution but to continue retrying until the bitmap loads. The
+				// cache SHOULD be doing it's job
+				Log.e("PhotoHub",
+						"OH GOD OUT OF MEMORY ERROR!!!!! Fucking Cache, pick up your game! Let's try again...");
+				return doInBackground();
+			}
 
 			return null;
 		}
 
 		@Override
 		protected void onPostExecute(Bitmap result) {
-
 			// check if ImageView is still there
+			if (isImageViewAttached()) {
+				ImageView v = mImageViewReference.get();
+				Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
+						+ " - ImageView " + mImageViewReference.get().getTag()
+						+ " still here. Placing url: " + mUrl);
+				setImageBitmap(v, result, mStateLevel);
+			}
 
-			// if it is, place bitmap in
-
-			Log.d(TAG + " Task", "AsyncTask - Finishing");
+			finish = System.currentTimeMillis();
+			Log.v(TAG + " Task", "AsyncTask " + mTaskNumber + " - Finished in " + (finish - start) + "ms");
 			mTasks.remove(this);
+			
+		}
+
+		public String getUrl() {
+			return mUrl;
 		}
 
 		public void attachImageView(ImageView pImageView) {
+			Log.d(TAG, "Attaching ImageView " + pImageView.getTag()
+					+ " to Task " + mTaskNumber);
 			mImageViewReference = new WeakReference<ImageView>(pImageView);
 		}
 
@@ -443,6 +669,11 @@ public class ImageLoader {
 
 		/** Detaches an ImageView */
 		public void detachImageView() {
+			ImageView reference = mImageViewReference.get();
+			if (reference != null) {
+				Log.d(TAG, "Detaching ImageView " + reference.getTag()
+						+ " from Task " + mTaskNumber);
+			}
 			mImageViewReference = new WeakReference<ImageView>(null);
 		}
 
@@ -450,70 +681,5 @@ public class ImageLoader {
 			return mCancellable;
 		}
 
-	}
-
-	/**
-	 * An AsyncBitmap that gets placed in an ImageView to indicate that an image
-	 * is loading itself there.
-	 */
-	public class AsyncBitmap extends BitmapDrawable {
-
-		private final WeakReference<BitmapLevelListAsyncTask> mBitmapAsyncTaskReference;
-
-		private boolean isCancellable = false;
-
-		/**
-		 * A class to put in an ImageView while things load
-		 * 
-		 * @param pResource
-		 *            resources
-		 * @param pBitmap
-		 *            bitmap to display while it loads
-		 * @param pBitmapAsyncTask
-		 *            task that's loading the url for this imageview
-		 * @param pIsCancellable
-		 *            true if the AsyncTask should be cancelled if the ImageView
-		 *            gets recycled to a different task
-		 */
-		public AsyncBitmap(Resources pResources, Bitmap pBitmap,
-				BitmapLevelListAsyncTask pBitmapAsyncTask,
-				boolean pIsCancellable) {
-			super(pResources, pBitmap);
-
-			isCancellable = pIsCancellable;
-
-			mBitmapAsyncTaskReference = new WeakReference<ImageLoader.BitmapLevelListAsyncTask>(
-					pBitmapAsyncTask);
-		}
-
-		/**
-		 * @return true if the task should be cancelled if the imageview is
-		 *         recycled
-		 */
-		public boolean isCancellable() {
-			return isCancellable;
-		}
-
-		/** @return the task associated with this drawable */
-		public BitmapLevelListAsyncTask getBitmapTask() {
-			BitmapLevelListAsyncTask task = mBitmapAsyncTaskReference.get();
-
-			if (task != null) {
-				return task;
-			}
-
-			return null;
-		}
-
-	}
-
-	public class CompletedBitmap extends BitmapDrawable {
-
-	}
-
-	public interface OnImageLoadedListener {
-		public void onImageLoaded(Bitmap pBitmap);
-
-		public void onImageFailed(String pData, String pMessage);
 	}
 }
