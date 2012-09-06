@@ -70,17 +70,11 @@ public class LruMemoryCache implements MemoryCache {
 			@Override
 			protected void entryRemoved(boolean evicted, String key,
 					Bitmap oldValue, Bitmap newValue) {
-				Log.e("MemoryCache",
-						"BITMAP REMOVED FROM CACHE: "
-								+ this.size()
-								+ " / "
-								+ this.maxSize()
-								+ " ~"
-								+ ((float) this.size() / (float) this.maxSize())
-								* 100f + "% full");
-				oldValue.recycle();
-				//System.gc();
+
+				// oldValue.recycle();
+				// System.gc();
 				super.entryRemoved(evicted, key, oldValue, newValue);
+
 			}
 
 		};
@@ -116,10 +110,6 @@ public class LruMemoryCache implements MemoryCache {
 	/** Outputs the size of the cache to the log */
 	@Override
 	public int getSize() {
-		Map<String, Bitmap> cacheSnapshot = mCache.snapshot();
-
-		Log.d(TAG, "Cache Size: " + cacheSnapshot.size() + " entries");
-
 		return mCache.size();
 	}
 

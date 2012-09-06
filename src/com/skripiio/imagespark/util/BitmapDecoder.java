@@ -5,7 +5,6 @@ import java.io.InputStream;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.util.Log;
 
 /** Bitmap Decoder */
 public class BitmapDecoder {
@@ -24,8 +23,8 @@ public class BitmapDecoder {
 	 *         ratio and dimensions that are equal to or greater than the
 	 *         requested width and height
 	 */
-	public static Bitmap decodeSampledBitmapFromFile(
-			InputStream filename, int reqWidth, int reqHeight) {
+	public static Bitmap decodeSampledBitmapFromFile(InputStream filename,
+			int reqWidth, int reqHeight) {
 		try {
 			// First decode with inJustDecodeBounds=true to check dimensions
 			final BitmapFactory.Options options = new BitmapFactory.Options();
@@ -34,7 +33,6 @@ public class BitmapDecoder {
 			try {
 				filename.reset();
 			} catch (IOException e) {
-				// TODO Auto-generated catch block
 				e.printStackTrace();
 			}
 
