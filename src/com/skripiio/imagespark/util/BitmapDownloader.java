@@ -24,7 +24,7 @@ public class BitmapDownloader {
 
 	public static DiskLruCache mCache;
 
-	public synchronized static DiskLruCache getCache(Context pContext) {
+	public synchronized static DiskLruCache getCache(Context pContext, String pCacheName) {
 		if (mCache == null) {
 			try {
 				mCache = DiskLruCache.open(
@@ -49,9 +49,9 @@ public class BitmapDownloader {
 	 * @return A File pointing to the fetched bitmap
 	 * @throws IOException
 	 */
-	public static InputStream downloadBitmap(Context context, String urlString)
+	public static InputStream downloadBitmap(Context context, String urlString, String pCacheName)
 			throws IOException, OutOfMemoryError {
-		DiskLruCache cache = getCache(context);
+		DiskLruCache cache = getCache(context, pCacheName);
 
 		cache.get(urlString);
 		Snapshot cacheSnapshot = cache.get(urlString);

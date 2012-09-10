@@ -76,10 +76,12 @@ public class ImageLoader {
 	private static final int THREAD_POOL_LARGE_DECODER_CORE_SIZE = 5;
 	private static final int THREAD_POOL_LARGE_DECODER_MAX_SIZE = 5;
 	private static final int THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS = 100;
+	
+	private String httpDiskCacheName;
 
-	public ImageLoader(Context pContext, Bitmap pLoadingBitmap) {
+	public ImageLoader(Context pContext, Bitmap pLoadingBitmap, String pHttpDiskCacheName) {
 		mContext = pContext;
-
+		httpDiskCacheName = pHttpDiskCacheName;
 		mTasks = new ArrayList<ImageLoader.BitmapLevelListAsyncTask>();
 		mLevelsToCancel = new ArrayList<Integer>();
 		mLevelsToCancel.add(2);
@@ -87,7 +89,7 @@ public class ImageLoader {
 		mLoadingBitmap = pLoadingBitmap;
 		mDiskCacheDir = Utils.getDiskCacheDir(pContext, "ImageSpark_Cache");
 
-		mQueue = new ArrayBlockingQueue<Runnable>(10000, true);
+		mQueue = new ArrayBlockingQueue<Runnable>(1000, true);
 
 		mThreadPool = new ThreadPoolExecutor(THREAD_POOL_CORE_SIZE,
 				THREAD_POOL_MAX_SIZE, THREAD_POOL_KEEP_ALIVE_IN_SECONDS,
@@ -567,7 +569,7 @@ public class ImageLoader {
 //					Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
 //							+ " - Downloading...");
 //					long startDownload = System.currentTimeMillis();
-					godStream = BitmapDownloader.downloadBitmap(mContext, mUrl);
+					godStream = BitmapDownloader.downloadBitmap(mContext, mUrl, httpDiskCacheName);
 //					long finishDownload = System.currentTimeMillis();
 //					Log.i(TAG + " Task Profiler", "Task " + mTaskNumber
 //							+ " - Downloaded in "

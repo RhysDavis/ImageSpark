@@ -26,6 +26,7 @@ public class BitmapDecoder {
 	public static Bitmap decodeSampledBitmapFromFile(InputStream filename,
 			int reqWidth, int reqHeight) {
 		try {
+			
 			// First decode with inJustDecodeBounds=true to check dimensions
 			final BitmapFactory.Options options = new BitmapFactory.Options();
 			options.inJustDecodeBounds = true;
@@ -42,7 +43,12 @@ public class BitmapDecoder {
 
 			// Decode bitmap with inSampleSize set
 			options.inJustDecodeBounds = false;
-			return BitmapFactory.decodeStream(filename, null, options);
+			Bitmap b = BitmapFactory.decodeStream(filename, null, options);
+			if (b == null) {
+				System.gc();
+				b = BitmapFactory.decodeStream(filename, null, options);
+			}
+			return b;
 		} catch (OutOfMemoryError e) {
 			// OUT OF MEMORY ERROR
 			e.printStackTrace();
