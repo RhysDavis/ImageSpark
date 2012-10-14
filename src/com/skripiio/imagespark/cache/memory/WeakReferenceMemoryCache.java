@@ -37,4 +37,10 @@ public class WeakReferenceMemoryCache implements MemoryCache {
 		return mCache.size();
 	}
 
+	@Override
+	public boolean remove(String pKey) {
+		// TODO Auto-generated method stub
+		return false;
+	}
+
 }

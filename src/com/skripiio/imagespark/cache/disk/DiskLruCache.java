@@ -50,9 +50,7 @@ import java.util.concurrent.TimeUnit;
 
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.CompressFormat;
-import android.util.Log;
 
-import com.imagespark.imagespark.BuildConfig;
 import com.skripiio.imagespark.util.Md5FileNameGenerator;
 import com.skripiio.imagespark.util.Utils;
 
@@ -458,7 +456,6 @@ public final class DiskLruCache implements Closeable {
 		 * throw errnoException.rethrowAsIOException(); } }
 		 */
 		if (file.exists() && !file.delete()) {
-			Log.e("DiskCache", "Awww Shit! File Not Deleted!");
 			throw new IOException();
 		}
 	}
@@ -562,22 +559,13 @@ public final class DiskLruCache implements Closeable {
 			if (writeBitmapToFile(data, editor)) {
 				mDiskCache.flush();
 				editor.commit();
-				if (BuildConfig.DEBUG) {
-					Log.d("cache_test_DISK_", "image put on disk cache " + key);
-				}
+				
 			} else {
 				editor.abort();
-				if (BuildConfig.DEBUG) {
-					Log.d("cache_test_DISK_",
-							"ERROR on: image put on disk cache " + key);
-				}
+				
 			}
 		} catch (IOException e) {
-			if (BuildConfig.DEBUG) {
-				Log.d("cache_test_DISK_",
-						"ERROR on: image put on disk cache IO Exception " + key
-								+ " : " + e.getMessage());
-			}
+			
 			try {
 				if (editor != null) {
 					editor.abort();

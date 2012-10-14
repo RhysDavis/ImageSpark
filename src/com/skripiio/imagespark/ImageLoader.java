@@ -1,13 +1,11 @@
 package com.skripiio.imagespark;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -16,15 +14,12 @@ import java.util.concurrent.TimeUnit;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
-import android.graphics.Bitmap.CompressFormat;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.util.Log;
 import android.widget.ImageView;
 
-import com.imagespark.imagespark.BuildConfig;
 import com.skripiio.imagespark.cache.disk.DiskLruCache;
-import com.skripiio.imagespark.cache.disk.DiskLruCache.Snapshot;
 import com.skripiio.imagespark.cache.memory.LruMemoryCache;
 import com.skripiio.imagespark.cache.memory.MemoryCache;
 import com.skripiio.imagespark.util.BitmapDecoder;
@@ -43,14 +38,14 @@ public class ImageLoader {
 
 	/** Disk Cache */
 	private File mDiskCacheDir;
-	private static final int DISK_CACHE_SIZE_IN_MB = 20;
+	public static final int DISK_CACHE_SIZE_IN_MB = 20;
 
 	/**
 	 * The Level Threshold is used to determine whether an object should be
 	 * stored in memory even if it's not being displayed. The threshold reveals
 	 * the lowest level to be stored in memory, any level after the threshold
 	 * will only be stored in local memory if it's being displayed in an
-	 * imageview
+	 * imageview. This is used for eager lazy loading.
 	 */
 	private int mLevelThreshold = 1;
 
@@ -67,41 +62,57 @@ public class ImageLoader {
 	 */
 	private ThreadPoolExecutor mThreadPool;
 	private ArrayBlockingQueue<Runnable> mQueue;
-	private static final int THREAD_POOL_CORE_SIZE = 5;
-	private static final int THREAD_POOL_MAX_SIZE = 5;
+	private static final int THREAD_POOL_CORE_SIZE = 3;
+	private static final int THREAD_POOL_MAX_SIZE = 4;
 	private static final int THREAD_POOL_KEEP_ALIVE_IN_SECONDS = 100;
 
 	private ThreadPoolExecutor mLargeDecoderThreadPool;
 	private ArrayBlockingQueue<Runnable> mLargeDecoderQueue;
-	private static final int THREAD_POOL_LARGE_DECODER_CORE_SIZE = 5;
-	private static final int THREAD_POOL_LARGE_DECODER_MAX_SIZE = 5;
+	private static final int THREAD_POOL_LARGE_DECODER_CORE_SIZE = 1;
+	private static final int THREAD_POOL_LARGE_DECODER_MAX_SIZE = 1;
 	private static final int THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS = 100;
-	
-	private String httpDiskCacheName;
 
-	public ImageLoader(Context pContext, Bitmap pLoadingBitmap, String pHttpDiskCacheName) {
+	private String mHttpDiskCacheName;
+	private int mHttpDiskCacheSizeInMb;
+
+	public class ImageLoaderOptions {
+
+		public ImageLoaderOptions() {
+			// memory cache size in percent [integer 30 - 90]
+			// levels to cancel [integer array]
+			// download disk cache name
+			// download disk cache size
+			// decoded disk cache name
+			// decoded disk cache size
+			// level threshold
+		}
+	}
+
+	public ImageLoader(Context pContext, Bitmap pLoadingBitmap,
+			String pHttpDiskCacheName, int pDiskCacheSizeInMb) {
 		mContext = pContext;
-		httpDiskCacheName = pHttpDiskCacheName;
+		mHttpDiskCacheName = pHttpDiskCacheName;
+		mHttpDiskCacheSizeInMb = pDiskCacheSizeInMb;
 		mTasks = new ArrayList<ImageLoader.BitmapLevelListAsyncTask>();
 		mLevelsToCancel = new ArrayList<Integer>();
 		mLevelsToCancel.add(2);
-		mMemoryCache = new LruMemoryCache(mContext, 20);
+		mMemoryCache = new LruMemoryCache(mContext, 15);
 		mLoadingBitmap = pLoadingBitmap;
 		mDiskCacheDir = Utils.getDiskCacheDir(pContext, "ImageSpark_Cache");
 
-		mQueue = new ArrayBlockingQueue<Runnable>(1000, true);
+		mQueue = new ArrayBlockingQueue<Runnable>(400, true);
 
 		mThreadPool = new ThreadPoolExecutor(THREAD_POOL_CORE_SIZE,
 				THREAD_POOL_MAX_SIZE, THREAD_POOL_KEEP_ALIVE_IN_SECONDS,
 				TimeUnit.MILLISECONDS, mQueue);
 
-		mLargeDecoderQueue = new ArrayBlockingQueue<Runnable>(10000, true);
-
-		mLargeDecoderThreadPool = new ThreadPoolExecutor(
-				THREAD_POOL_LARGE_DECODER_CORE_SIZE,
-				THREAD_POOL_LARGE_DECODER_MAX_SIZE,
-				THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS,
-				TimeUnit.MILLISECONDS, mLargeDecoderQueue);
+//		mLargeDecoderQueue = new ArrayBlockingQueue<Runnable>(10000, true);
+//
+//		mLargeDecoderThreadPool = new ThreadPoolExecutor(
+//				THREAD_POOL_LARGE_DECODER_CORE_SIZE,
+//				THREAD_POOL_LARGE_DECODER_MAX_SIZE,
+//				THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS,
+//				TimeUnit.MILLISECONDS, mLargeDecoderQueue);
 	}
 
 	public void setExitTasksEarly(boolean pExitTasksEarly) {
@@ -110,9 +121,16 @@ public class ImageLoader {
 
 	public void cancelAllTasks() {
 		for (int i = 0; i < mTasks.size(); i++) {
-			mTasks.get(i).cancel(true);
-			mQueue.remove(mTasks.get(i));
-			mLargeDecoderQueue.remove(mTasks.get(i));
+			// these can be cancelled concurrently if the user is quick. so be
+			// careful
+			if (mTasks.size() > i)
+				mTasks.get(i).cancel(true);
+			if (mTasks.size() > i)
+				mTasks.get(i).detachImageView();
+			if (mTasks.size() > i)
+				mQueue.remove(mTasks.get(i));
+			//if (mTasks.size() > i)
+				//mLargeDecoderQueue.remove(mTasks.get(i));
 		}
 
 		for (int i = mTasks.size() - 1; i >= 0; i--) {
@@ -145,41 +163,50 @@ public class ImageLoader {
 		ArrayList<BitmapLevelListAsyncTask> tasks = getTask(pImageView);
 		if (tasks.size() != 0) {
 			for (int i = 0; i < tasks.size(); i++) {
-				tasks.get(i).cancel(true);
-				mTasks.remove(tasks.get(i));
-				mQueue.remove(tasks.get(i));
-				mLargeDecoderQueue.remove(tasks.get(i));
-
+				cancelTask(tasks.get(i));
 			}
 		}
 	}
 
+	/** Cancels a task and removes it from the executor queue */
+	private void cancelTask(BitmapLevelListAsyncTask pTask) {
+		pTask.cancel(true);
+		pTask.detachImageView();
+		mTasks.remove(pTask);
+		mQueue.remove(pTask);
+		//mLargeDecoderQueue.remove(pTask);
+	}
+
+	/** Flushe's a URL from the memory cache */
+	public void flushFromMem(String pUrl) {
+		mMemoryCache.remove(pUrl);
+	}
+
+	/**
+	 * Checks the Maps attached to an ImageView. If the maps are identicle, it
+	 * means the ImageView is loading the same tasks that you are requesting. If
+	 * the maps are different, it cancels the tasks attached to the ImageView.
+	 * 
+	 * @return true if the urls are equivalent and nothing should happen
+	 */
 	private boolean checkImageViewMaps(ImageView pImageView,
 			Map<String, Integer> pLoadLevelMap) {
 		Drawable d = pImageView.getDrawable();
 		if (d != null) {
-			d = (AsyncBitmapDrawable) d;
 			if (d instanceof AsyncBitmapDrawable) {
 				AsyncBitmapDrawable drawable = (AsyncBitmapDrawable) d;
 				Map<String, Integer> imageViewLevels = drawable.getUrlLevels();
 
 				// if the urls are the equivalent
 				if (pLoadLevelMap.keySet().equals(imageViewLevels.keySet())) {
-
 					return true;
 				} else {
-
 					// urls are not equivalent.
 					ArrayList<BitmapLevelListAsyncTask> tasks = getTask(pImageView);
 					for (BitmapLevelListAsyncTask task : tasks) {
 						if (task.isCancellable()) {
-							task.cancel(true);
-							task.detachImageView();
-							mTasks.remove(task);
-							mQueue.remove(task);
-							mLargeDecoderQueue.remove(task);
+							cancelTask(task);
 						} else {
-
 							task.detachImageView();
 						}
 					}
@@ -189,8 +216,6 @@ public class ImageLoader {
 
 		return false;
 	}
-
-	private int mImageViewCounter = 0;
 
 	public void loadImage(ImageView pImageView,
 			Map<String, Integer> pLoadLevelMap, int pImageViewSize) {
@@ -205,22 +230,7 @@ public class ImageLoader {
 			Map<String, Integer> pLoadLevelMap, int pImageViewSize,
 			final ImageLoaderListener pListener) {
 		if (pImageView != null) {
-			if (pImageView.getTag() == null) {
-				pImageView.setTag(mImageViewCounter + "");
-				mImageViewCounter++;
-			}
-		}
-
-		if (pImageView != null) {
-
-			// check if the map matches the current map associated with the
-			// imageview. If not, disassociate the imageview from the tasks, and
-			// cancel cancellable tasks
 			checkImageViewMaps(pImageView, pLoadLevelMap);
-
-			// if so, the same images are being loaded into the ImageView.
-			// Proceed
-			// to check memcaches
 		}
 
 		// sort the map highest index first
@@ -251,38 +261,46 @@ public class ImageLoader {
 
 				if (task != null) {
 					// if there is, reference the task for later use
-					runningTasks.add(task);
-				} else {
-
-					// if not, create a new task and reference
-					// check if that particular state level should be
-					// cancellable
-					boolean cancellable = false;
-					if (mLevelsToCancel.contains(pLoadLevelMap.get(url))) {
-						cancellable = true;
-					}
-
-					BitmapLevelListAsyncTask newTask;
-					if (pImageView != null) {
-						newTask = new BitmapLevelListAsyncTask(pImageView, url,
-								pImageViewSize, pLoadLevelMap.get(url),
-								cancellable, pListener);
-					} else {
-						newTask = new BitmapLevelListAsyncTask(url,
-								pImageViewSize, pLoadLevelMap.get(url),
-								cancellable, pListener);
-					}
-
-					// start running the new task
-					if (cancellable) {
-						newTask.executeOnExecutor(mLargeDecoderThreadPool);
-					} else {
-						newTask.executeOnExecutor(mThreadPool);
-					}
-
-					mTasks.add(newTask);
-					runningTasks.add(newTask);
+					// cancelTask(task);
+					// note: commented out, as since position 0 always got
+					// re-initialized by the gridview, it was
+					// cancelling out the correct imageview.
 				}
+
+				// if not, create a new task and reference
+				// check if that particular state level should be
+				// cancellable
+				boolean cancellable = false;
+				if (mLevelsToCancel.contains(pLoadLevelMap.get(url))) {
+					cancellable = true;
+				}
+
+				BitmapLevelListAsyncTask newTask;
+				if (pImageView != null) {
+					newTask = new BitmapLevelListAsyncTask(pImageView, url,
+							pImageViewSize, pLoadLevelMap.get(url),
+							cancellable, pListener);
+				} else {
+					newTask = new BitmapLevelListAsyncTask(url, pImageViewSize,
+							pLoadLevelMap.get(url), cancellable, pListener);
+				}
+
+				// start running the new task
+				if (cancellable) {
+					newTask.executeOnExecutor(mThreadPool);
+					// if (pListener != null) {
+					// pListener.onImageLoaded(memCacheLevel);
+					// }
+				} else {
+					newTask.executeOnExecutor(mThreadPool);
+					// if (pListener != null) {
+					// pListener.onImageLoaded(memCacheLevel);
+					// }
+				}
+
+				mTasks.add(newTask);
+				runningTasks.add(newTask);
+
 			}
 		}
 
@@ -394,8 +412,10 @@ public class ImageLoader {
 				Map<String, Integer> pUrlLevels, int pCurrentLevel) {
 			super(pResources, pBitmap);
 			mTasks = pTasks;
-			mUrlLevels = pUrlLevels;
+			mUrlLevels = new HashMap<String, Integer>();
+			mUrlLevels.putAll(pUrlLevels);
 			mLevel = pCurrentLevel;
+
 		}
 
 		public Map<String, Integer> getUrlLevels() {
@@ -404,6 +424,18 @@ public class ImageLoader {
 
 		public int getCurrentLevel() {
 			return mLevel;
+		}
+
+		public void recycle() {
+			if (mLevel != 0) {
+				// recycle all
+				for (String url : mUrlLevels.keySet()) {
+					mMemoryCache.remove(url);
+				}
+				if (getBitmap() != null) {
+					getBitmap().recycle();
+				}
+			}
 		}
 
 	}
@@ -422,8 +454,10 @@ public class ImageLoader {
 			AsyncBitmapDrawable drawable = (AsyncBitmapDrawable) imageDrawable;
 
 			if (drawable.getCurrentLevel() < pIndex) {
+
 				drawable = new AsyncBitmapDrawable(mContext.getResources(),
 						pBitmap, drawable.mTasks, drawable.mUrlLevels, pIndex);
+
 				pImageView.setImageDrawable(drawable);
 			}
 
@@ -547,16 +581,11 @@ public class ImageLoader {
 			}
 			// check the disk cache for image
 			try {
-				Snapshot snapshot = null;
 				// DiskLruCache cache = getCache(mDiskCacheDir);
 				// Snapshot snapshot = cache.get(mUrl);
-//				if (snapshot != null) {
-//					Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
-//							+ "- Url found in Disk Cache!");
-//				} else {
-//					Log.v(TAG + " Task",
-//							"AsyncTask - Url not found in Disk Cache");
-//				}
+				// if (snapshot != null) {
+				// // found in disk cache
+				// }
 
 				if (checkCancelled()) {
 					return null;
@@ -565,78 +594,54 @@ public class ImageLoader {
 				Bitmap godBitmap = null;
 				InputStream godStream = null;
 
-				if (snapshot == null) {
-//					Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
-//							+ " - Downloading...");
-//					long startDownload = System.currentTimeMillis();
-					godStream = BitmapDownloader.downloadBitmap(mContext, mUrl, httpDiskCacheName);
-//					long finishDownload = System.currentTimeMillis();
-//					Log.i(TAG + " Task Profiler", "Task " + mTaskNumber
-//							+ " - Downloaded in "
-//							+ (finishDownload - startDownload) + "ms");
+				// if (snapshot == null) {
+				godStream = BitmapDownloader.downloadBitmap(mContext, mUrl,
+						mHttpDiskCacheName, mHttpDiskCacheSizeInMb);
 
-					if (checkCancelled()) {
-						return null;
-					}
+				if (godStream == null) {
+					// something went wrong with the network to download the
+					// bitmap
 
-					// duplicate inputstream for caching and returning
-					// ByteArrayOutputStream baos = new ByteArrayOutputStream();
-					// byte[] buf = new byte[1024];
-					// int n = 0;
-					// while ((n = godStream.read(buf)) >= 0)
-					// baos.write(buf, 0, n);
-					// byte[] content = baos.toByteArray();
+					return null;
 
-//					Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
-//							+ " - Decoding...");
-//					long start = System.currentTimeMillis();
-
-					// once downloaded, decode it
-					godBitmap = BitmapDecoder.decodeSampledBitmapFromFile(
-							godStream, mImageSize, mImageSize);
-//					long finish = System.currentTimeMillis();
-//					Log.e(TAG + " Task", "AsyncTask " + mTaskNumber
-//							+ " - Decoded to ImageView size in "
-//							+ (finish - start) + "ms");
-//					Log.i(TAG + " Task Profiler", "Task " + mTaskNumber
-//							+ " - Decoded in " + (finish - start) + "ms");
-
-					// put in disk cache
-					// if (godBitmap != null) {
-					// long startCache = System.currentTimeMillis();
-					// Log.e("ImageSpark", "AsyncTask " + mTaskNumber
-					// + "Compressing Bitmap for Cache");
-					// ByteArrayOutputStream bos = new ByteArrayOutputStream();
-					// godBitmap.compress(CompressFormat.PNG, 0 /*
-					// * ignored for
-					// * PNG
-					// */, bos);
-					// byte[] bitmapdata = bos.toByteArray();
-					// ByteArrayInputStream bs = new ByteArrayInputStream(
-					// bitmapdata);
-					// cache.put(mCache, mUrl, bs);
-					// long finishCache = System.currentTimeMillis();
-					// Log.e("ImageSpark", "AsyncTask " + mTaskNumber
-					// + "Compressed: " + (finishCache - startCache)
-					// + "ms");
-					// }
-				} else {
-//					Log.e("ImageLoader", "Fetching from Cache");
-					final BufferedInputStream buffIn = new BufferedInputStream(
-							snapshot.getInputStream(0), Utils.IO_BUFFER_SIZE);
-					godBitmap = BitmapDecoder.decodeSampledBitmapFromFile(
-							buffIn, mImageSize, mImageSize);
-					snapshot.close();
 				}
+
+				if (checkCancelled()) {
+					return null;
+				}
+
+				// duplicate inputstream for caching and returning
+				// byte[] content = Utils
+				// .getByteArrayFromInputStream(godStream);
+
+				// once downloaded, decode it
+				godBitmap = BitmapDecoder.decodeSampledBitmapFromFile(
+						godStream, mImageSize, mImageSize);
+				godStream.close();
+				// put in disk cache
+				// if (godBitmap != null) {
+				// ByteArrayOutputStream bos = new ByteArrayOutputStream();
+				// godBitmap.compress(CompressFormat.PNG, 100, bos);
+				//
+				// byte[] bitmapdata = bos.toByteArray();
+				// ByteArrayInputStream bs = new ByteArrayInputStream(
+				// bitmapdata);
+				// cache.put(mCache, mUrl, bs);
+				// }
+				// } else {
+				// final BufferedInputStream buffIn = new BufferedInputStream(
+				// snapshot.getInputStream(0), Utils.IO_BUFFER_SIZE);
+				// godBitmap = BitmapDecoder.decodeSampledBitmapFromFile(
+				// buffIn, mImageSize, mImageSize);
+				// snapshot.close();
+				// }
 
 				// once decoded, check if ImageView is attached
 				if (godBitmap != null) {
-					long startMemCache = System.currentTimeMillis();
 					if (isImageViewAttached()) {
-						// if ImageView is still in memory, put the image in
-						// memory
 
 						mMemoryCache.put(mUrl, godBitmap);
+
 					} else {
 						// if the url is below the level threshold, put it into
 						// memory cache
@@ -644,7 +649,6 @@ public class ImageLoader {
 							// mMemoryCache.put(mUrl, godBitmap);
 						}
 					}
-					long finishMemCache = System.currentTimeMillis();
 				}
 
 				return godBitmap;
@@ -654,13 +658,7 @@ public class ImageLoader {
 						+ " - Failed to open Disk Cache! " + e.getMessage());
 				e.printStackTrace();
 			} catch (OutOfMemoryError e) {
-				// OUT OF MEMORY OCCURED!!!
-				// we want this to NEVER happen, but unfortunately I have no
-				// solution but to continue retrying until the bitmap loads. The
-				// cache SHOULD be doing it's job
-				Log.e("PhotoHub",
-						"OH GOD OUT OF MEMORY ERROR!!!!! Fucking Cache, pick up your game! Let's try again...");
-				return doInBackground();
+				e.printStackTrace();
 			}
 
 			return null;
@@ -668,26 +666,29 @@ public class ImageLoader {
 
 		@Override
 		protected void onPostExecute(Bitmap result) {
-			if (result == null) {
-				Log.e("PhotoHub", "BITMAP RETURNED AS NULL FROM THE IMAGELOADER. Baddddddddd");
-			}
+
 			// check if ImageView is still there
 			if (isImageViewAttached()) {
 				ImageView v = mImageViewReference.get();
-//				Log.v(TAG + " Task", "AsyncTask " + mTaskNumber
-//						+ " - ImageView " + mImageViewReference.get().getTag()
-//						+ " still here. Placing url: " + mUrl);
 				setImageBitmap(v, result, mStateLevel);
 				if (mListener != null) {
 					mListener.onImageLoaded(mStateLevel);
 				}
+			} else {
+				result = null;
 			}
 
-			finish = System.currentTimeMillis();
-//			Log.v(TAG + " Task", "AsyncTask " + mTaskNumber + " - Finished in "
-//					+ (finish - start) + "ms");
 			mTasks.remove(this);
 
+			if (result == null) {
+				if (mListener != null) {
+					mListener.onImageLoadFailed(mStateLevel);
+				}
+			} else {
+				if (mListener != null) {
+					mListener.onImageLoaded(mStateLevel);
+				}
+			}
 		}
 
 		public String getUrl() {
@@ -695,8 +696,8 @@ public class ImageLoader {
 		}
 
 		public void attachImageView(ImageView pImageView) {
-//			Log.d(TAG, "Attaching ImageView " + pImageView.getTag()
-//					+ " to Task " + mTaskNumber);
+			// Log.d(TAG, "Attaching ImageView " + pImageView.getTag()
+			// + " to Task " + mTaskNumber);
 			mImageViewReference = new WeakReference<ImageView>(pImageView);
 		}
 
@@ -713,8 +714,8 @@ public class ImageLoader {
 		public void detachImageView() {
 			ImageView reference = mImageViewReference.get();
 			if (reference != null) {
-//				Log.d(TAG, "Detaching ImageView " + reference.getTag()
-//						+ " from Task " + mTaskNumber);
+				// Log.d(TAG, "Detaching ImageView " + reference.getTag()
+				// + " from Task " + mTaskNumber);
 			}
 			mImageViewReference = new WeakReference<ImageView>(null);
 		}

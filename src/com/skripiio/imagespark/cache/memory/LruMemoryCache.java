@@ -1,7 +1,6 @@
 package com.skripiio.imagespark.cache.memory;
 
 import java.lang.reflect.Method;
-import java.util.Map;
 
 import android.app.ActivityManager;
 import android.content.Context;
@@ -61,6 +60,7 @@ public class LruMemoryCache implements MemoryCache {
 	 *            capacity of the cache in bytes
 	 */
 	public void initializeLruCache(int pCapacity) {
+
 		mCache = new LruCache<String, Bitmap>(pCapacity) {
 			@Override
 			protected int sizeOf(String key, Bitmap bitmap) {
@@ -71,8 +71,6 @@ public class LruMemoryCache implements MemoryCache {
 			protected void entryRemoved(boolean evicted, String key,
 					Bitmap oldValue, Bitmap newValue) {
 
-				// oldValue.recycle();
-				// System.gc();
 				super.entryRemoved(evicted, key, oldValue, newValue);
 
 			}
@@ -83,12 +81,16 @@ public class LruMemoryCache implements MemoryCache {
 	@Override
 	public Bitmap get(String pKey) {
 		if (pKey == null) {
-			Log.w(TAG, "Invalid Parameters in method Get");
 			return null;
 		}
 		Bitmap b;
 		synchronized (mCache) {
 			b = mCache.get(pKey);
+			if (b != null) {
+				if (b.isRecycled()) {
+					return null;
+				}
+			}
 		}
 		return b;
 	}
@@ -120,5 +122,13 @@ public class LruMemoryCache implements MemoryCache {
 			return true;
 		} else
 			return false;
+	}
+
+	@Override
+	public boolean remove(String pKey) {
+		if (mCache.remove(pKey) != null) {
+			return true;
+		}
+		return false;
 	}
 }

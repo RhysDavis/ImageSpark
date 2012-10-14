@@ -7,6 +7,9 @@ public interface MemoryCache {
 	/** Clears the cache of everything */
 	public boolean clearCache();
 
+	/** Removes a bitmap from the cache */
+	public boolean remove(String pKey);
+	
 	/** @return a bitmap for the current key */
 	public Bitmap get(String pKey);
 

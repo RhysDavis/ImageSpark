@@ -5,6 +5,7 @@ import java.io.InputStream;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.util.Log;
 
 /** Bitmap Decoder */
 public class BitmapDecoder {
@@ -26,11 +27,12 @@ public class BitmapDecoder {
 	public static Bitmap decodeSampledBitmapFromFile(InputStream filename,
 			int reqWidth, int reqHeight) {
 		try {
-			
+
 			// First decode with inJustDecodeBounds=true to check dimensions
 			final BitmapFactory.Options options = new BitmapFactory.Options();
 			options.inJustDecodeBounds = true;
 			BitmapFactory.decodeStream(filename, null, options);
+
 			try {
 				filename.reset();
 			} catch (IOException e) {
@@ -44,12 +46,14 @@ public class BitmapDecoder {
 			// Decode bitmap with inSampleSize set
 			options.inJustDecodeBounds = false;
 			Bitmap b = BitmapFactory.decodeStream(filename, null, options);
+
 			if (b == null) {
 				System.gc();
 				b = BitmapFactory.decodeStream(filename, null, options);
 			}
 			return b;
 		} catch (OutOfMemoryError e) {
+			System.gc();
 			// OUT OF MEMORY ERROR
 			e.printStackTrace();
 			return decodeSampledBitmapFromFile(filename, reqWidth, reqHeight);

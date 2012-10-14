@@ -1,6 +1,9 @@
 package com.skripiio.imagespark.util;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -18,6 +21,16 @@ import android.os.Environment;
 public class Utils {
 	public static final int IO_BUFFER_SIZE = 8 * 1024;
 
+	public static byte[] getByteArrayFromInputStream(InputStream pInputStream) throws IOException {
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		byte[] buf = new byte[1024];
+		int n = 0;
+		while ((n = pInputStream.read(buf)) >= 0)
+			baos.write(buf, 0, n);
+		
+		return baos.toByteArray();
+	}
+	
 	/**
 	 * Get the size in bytes of a bitmap.
 	 * 
