@@ -21,16 +21,17 @@ import android.os.Environment;
 public class Utils {
 	public static final int IO_BUFFER_SIZE = 8 * 1024;
 
-	public static byte[] getByteArrayFromInputStream(InputStream pInputStream) throws IOException {
+	public static byte[] getByteArrayFromInputStream(InputStream pInputStream)
+			throws IOException {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		byte[] buf = new byte[1024];
 		int n = 0;
 		while ((n = pInputStream.read(buf)) >= 0)
 			baos.write(buf, 0, n);
-		
+
 		return baos.toByteArray();
 	}
-	
+
 	/**
 	 * Get the size in bytes of a bitmap.
 	 * 
@@ -54,13 +55,13 @@ public class Utils {
 		for (String key : map.keySet()) {
 			values.add(key);
 		}
-		
+
 		// reverse values
 		ArrayList<String> rightValues = new ArrayList<String>();
-		for (int i = values.size()-1; i >= 0; i--) {
+		for (int i = values.size() - 1; i >= 0; i--) {
 			rightValues.add(values.get(i));
 		}
-		
+
 		return rightValues;
 	}
 
@@ -91,15 +92,13 @@ public class Utils {
 	 * @return The cache dir
 	 */
 	public static File getDiskCacheDir(Context context, String uniqueName) {
-
-		// Check if media is mounted or storage is built-in, if so, try and use
-		// external cache dir
-		// otherwise use internal cache dir
-		final String cachePath = Environment.getExternalStorageState().equals(
-				Environment.MEDIA_MOUNTED)
-				|| !Utils.isExternalStorageRemovable() ? Utils
-				.getExternalCacheDir(context).getPath() : context.getCacheDir()
-				.getPath();
+		String state = Environment.getExternalStorageState();
+		String cachePath;
+		if (Environment.MEDIA_MOUNTED.equals(state)) {
+			cachePath = Utils.getExternalCacheDir(context).getPath();
+		}  else {
+			cachePath = context.getCacheDir().getPath();
+		}
 
 		return new File(cachePath + File.separator + uniqueName);
 	}

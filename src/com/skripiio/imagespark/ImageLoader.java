@@ -40,6 +40,8 @@ public class ImageLoader {
 	private File mDiskCacheDir;
 	public static final int DISK_CACHE_SIZE_IN_MB = 20;
 
+	private Thread mTaskLauncherThread;
+
 	/**
 	 * The Level Threshold is used to determine whether an object should be
 	 * stored in memory even if it's not being displayed. The threshold reveals
@@ -62,7 +64,7 @@ public class ImageLoader {
 	 */
 	private ThreadPoolExecutor mThreadPool;
 	private ArrayBlockingQueue<Runnable> mQueue;
-	private static final int THREAD_POOL_CORE_SIZE = 3;
+	private static final int THREAD_POOL_CORE_SIZE = 4;
 	private static final int THREAD_POOL_MAX_SIZE = 4;
 	private static final int THREAD_POOL_KEEP_ALIVE_IN_SECONDS = 100;
 
@@ -100,19 +102,19 @@ public class ImageLoader {
 		mLoadingBitmap = pLoadingBitmap;
 		mDiskCacheDir = Utils.getDiskCacheDir(pContext, "ImageSpark_Cache");
 
-		mQueue = new ArrayBlockingQueue<Runnable>(400, true);
+		mQueue = new ArrayBlockingQueue<Runnable>(800, true);
 
 		mThreadPool = new ThreadPoolExecutor(THREAD_POOL_CORE_SIZE,
 				THREAD_POOL_MAX_SIZE, THREAD_POOL_KEEP_ALIVE_IN_SECONDS,
 				TimeUnit.MILLISECONDS, mQueue);
 
-//		mLargeDecoderQueue = new ArrayBlockingQueue<Runnable>(10000, true);
-//
-//		mLargeDecoderThreadPool = new ThreadPoolExecutor(
-//				THREAD_POOL_LARGE_DECODER_CORE_SIZE,
-//				THREAD_POOL_LARGE_DECODER_MAX_SIZE,
-//				THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS,
-//				TimeUnit.MILLISECONDS, mLargeDecoderQueue);
+		// mLargeDecoderQueue = new ArrayBlockingQueue<Runnable>(10000, true);
+		//
+		// mLargeDecoderThreadPool = new ThreadPoolExecutor(
+		// THREAD_POOL_LARGE_DECODER_CORE_SIZE,
+		// THREAD_POOL_LARGE_DECODER_MAX_SIZE,
+		// THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS,
+		// TimeUnit.MILLISECONDS, mLargeDecoderQueue);
 	}
 
 	public void setExitTasksEarly(boolean pExitTasksEarly) {
@@ -129,8 +131,8 @@ public class ImageLoader {
 				mTasks.get(i).detachImageView();
 			if (mTasks.size() > i)
 				mQueue.remove(mTasks.get(i));
-			//if (mTasks.size() > i)
-				//mLargeDecoderQueue.remove(mTasks.get(i));
+			// if (mTasks.size() > i)
+			// mLargeDecoderQueue.remove(mTasks.get(i));
 		}
 
 		for (int i = mTasks.size() - 1; i >= 0; i--) {
@@ -174,7 +176,7 @@ public class ImageLoader {
 		pTask.detachImageView();
 		mTasks.remove(pTask);
 		mQueue.remove(pTask);
-		//mLargeDecoderQueue.remove(pTask);
+		// mLargeDecoderQueue.remove(pTask);
 	}
 
 	/** Flushe's a URL from the memory cache */
@@ -256,7 +258,7 @@ public class ImageLoader {
 			} else {
 				// everytime memcache is not found:
 				// check our task pool if there is a current task trying to
-				// loading the url
+				// load the url
 				BitmapLevelListAsyncTask task = getTask(url);
 
 				if (task != null) {
@@ -313,7 +315,7 @@ public class ImageLoader {
 			weakReferenceTasks
 					.add(new WeakReference<ImageLoader.BitmapLevelListAsyncTask>(
 							task));
-			task.detachImageView();
+			task.detachImageView(); // ensure no rogue imageviews are attached to the task
 			if (pImageView != null) {
 				task.attachImageView(pImageView);
 			}
@@ -369,8 +371,12 @@ public class ImageLoader {
 	 */
 	private BitmapLevelListAsyncTask getTask(String pUrl) {
 		for (BitmapLevelListAsyncTask task : mTasks) {
-			if (task.getUrl().equals(pUrl)) {
-				return task;
+			if (task != null) {
+				if (!task.isCancelled()) {
+					if (task.getUrl().equals(pUrl)) {
+						return task;
+					}
+				}
 			}
 		}
 		return null;
@@ -415,7 +421,6 @@ public class ImageLoader {
 			mUrlLevels = new HashMap<String, Integer>();
 			mUrlLevels.putAll(pUrlLevels);
 			mLevel = pCurrentLevel;
-
 		}
 
 		public Map<String, Integer> getUrlLevels() {
@@ -696,8 +701,6 @@ public class ImageLoader {
 		}
 
 		public void attachImageView(ImageView pImageView) {
-			// Log.d(TAG, "Attaching ImageView " + pImageView.getTag()
-			// + " to Task " + mTaskNumber);
 			mImageViewReference = new WeakReference<ImageView>(pImageView);
 		}
 
@@ -713,10 +716,6 @@ public class ImageLoader {
 		/** Detaches an ImageView */
 		public void detachImageView() {
 			ImageView reference = mImageViewReference.get();
-			if (reference != null) {
-				// Log.d(TAG, "Detaching ImageView " + reference.getTag()
-				// + " from Task " + mTaskNumber);
-			}
 			mImageViewReference = new WeakReference<ImageView>(null);
 		}
 

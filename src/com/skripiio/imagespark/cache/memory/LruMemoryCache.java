@@ -33,7 +33,7 @@ public class LruMemoryCache implements MemoryCache {
 			pSizeInPercent = 0;
 		}
 
-		if (pSizeInPercent >= 81) {
+		if (pSizeInPercent > 80) {
 			pSizeInPercent = 80;
 		}
 		int capacity = (int) ((1024f * 1024f * (float) (memClass * pSizeInPercent)) / 100f);
@@ -70,7 +70,6 @@ public class LruMemoryCache implements MemoryCache {
 			@Override
 			protected void entryRemoved(boolean evicted, String key,
 					Bitmap oldValue, Bitmap newValue) {
-
 				super.entryRemoved(evicted, key, oldValue, newValue);
 
 			}
@@ -97,6 +96,7 @@ public class LruMemoryCache implements MemoryCache {
 
 	@Override
 	public void put(String pKey, Bitmap pBitmap) {
+
 		if (pKey == null || pBitmap == null) {
 			Log.w(TAG, "Invalid Parameters in method Put");
 			return;

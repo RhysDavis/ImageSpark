@@ -30,16 +30,14 @@ public class BitmapDownloader {
 				boolean external = Environment.getExternalStorageState()
 						.equals(Environment.MEDIA_MOUNTED);
 				File dir = Utils.getDiskCacheDir(pContext, pCacheName);
-				
+
 				int cacheSize = (pCacheSizeInMB * 1024 * 1024);
 				// if only internal. Use 5mb of space
 				if (!external) {
-					Log.e("PhotoHub", "Internal Cache Used");
 					cacheSize = (5 * 1024 * 1024);
 				}
-				
-				mCache = DiskLruCache.open(dir, 1, 1,
-						cacheSize);
+
+				mCache = DiskLruCache.open(dir, 1, 1, cacheSize);
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
@@ -50,7 +48,6 @@ public class BitmapDownloader {
 	public static void resetCache() {
 		if (mCache != null && !mCache.isClosed()) {
 			try {
-				Log.e("PhotoHub", "Resetingg Cache");
 				mCache.close();
 			} catch (IOException e) {
 				e.printStackTrace();
