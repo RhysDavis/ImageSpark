@@ -21,6 +21,8 @@ local.properties
 .settings
 
 ImageSpark.iml
+lint.xml
+build.xml
 
 # Mac filesystem files
 .DS_Store
