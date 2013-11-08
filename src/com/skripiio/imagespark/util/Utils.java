@@ -26,6 +26,7 @@ public class Utils {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		byte[] buf = new byte[1024];
 		int n = 0;
+		// error - unexpected end of strem on line below
 		while ((n = pInputStream.read(buf)) >= 0)
 			baos.write(buf, 0, n);
 
@@ -94,7 +95,7 @@ public class Utils {
 	public static File getDiskCacheDir(Context context, String uniqueName) {
 		String state = Environment.getExternalStorageState();
 		String cachePath;
-		if (Environment.MEDIA_MOUNTED.equals(state)) {
+		if (Environment.MEDIA_MOUNTED.equals(state) && Utils.getExternalCacheDir(context) != null) {
 			cachePath = Utils.getExternalCacheDir(context).getPath();
 		}  else {
 			cachePath = context.getCacheDir().getPath();

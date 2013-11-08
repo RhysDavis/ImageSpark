@@ -40,6 +40,8 @@ public class BitmapDownloader {
 				mCache = DiskLruCache.open(dir, 1, 1, cacheSize);
 			} catch (IOException e) {
 				e.printStackTrace();
+			} catch (IllegalArgumentException e) {
+				e.printStackTrace();
 			}
 		}
 		return mCache;
@@ -74,16 +76,18 @@ public class BitmapDownloader {
 			OutOfMemoryError {
 
 		// Access Disk Cache
+		// at the moment there is a bug if the cache corrupts the download cache
+		// is no longer a thing
 		DiskLruCache cache = getCache(context, pCacheName, pCacheSizeInMb);
-		cache.get(urlString);
-		Snapshot cacheSnapshot = cache.get(urlString);
+		if (cache != null) {
+			Snapshot cacheSnapshot = cache.get(urlString);
 
-		if (cacheSnapshot != null) {
-			final BufferedInputStream buffIn = new BufferedInputStream(
-					cacheSnapshot.getInputStream(0), Utils.IO_BUFFER_SIZE);
-			return buffIn;
+			if (cacheSnapshot != null) {
+				final BufferedInputStream buffIn = new BufferedInputStream(
+						cacheSnapshot.getInputStream(0), Utils.IO_BUFFER_SIZE);
+				return buffIn;
+			}
 		}
-
 		// Download
 		HttpURLConnection urlConnection = null;
 		try {
@@ -95,11 +99,14 @@ public class BitmapDownloader {
 			byte[] content = Utils.getByteArrayFromInputStream(in);
 
 			in.close();
-			InputStream cacheStream = new ByteArrayInputStream(content);
-			cache.put(cache, urlString, cacheStream);
-			cacheStream.close();
+			if (cache != null) { // dump in cache if it exists
+				InputStream cacheStream = new ByteArrayInputStream(content);
+				cache.put(cache, urlString, cacheStream);
+				cacheStream.close();
+			}
 
-			return new ByteArrayInputStream(content);
+			ByteArrayInputStream stream = new ByteArrayInputStream(content);
+			return stream;
 
 		} catch (final IOException e) {
 			e.printStackTrace();

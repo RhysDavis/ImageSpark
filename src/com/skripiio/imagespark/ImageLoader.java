@@ -19,7 +19,6 @@ import android.graphics.drawable.Drawable;
 import android.util.Log;
 import android.widget.ImageView;
 
-import com.skripiio.imagespark.cache.disk.DiskLruCache;
 import com.skripiio.imagespark.cache.memory.LruMemoryCache;
 import com.skripiio.imagespark.cache.memory.MemoryCache;
 import com.skripiio.imagespark.util.BitmapDecoder;
@@ -39,8 +38,6 @@ public class ImageLoader {
 	/** Disk Cache */
 	private File mDiskCacheDir;
 	public static final int DISK_CACHE_SIZE_IN_MB = 20;
-
-	private Thread mTaskLauncherThread;
 
 	/**
 	 * The Level Threshold is used to determine whether an object should be
@@ -64,14 +61,14 @@ public class ImageLoader {
 	 */
 	private ThreadPoolExecutor mThreadPool;
 	private ArrayBlockingQueue<Runnable> mQueue;
-	private static final int THREAD_POOL_CORE_SIZE = 4;
-	private static final int THREAD_POOL_MAX_SIZE = 4;
+	private static final int THREAD_POOL_CORE_SIZE = 3;
+	private static final int THREAD_POOL_MAX_SIZE = 3;
 	private static final int THREAD_POOL_KEEP_ALIVE_IN_SECONDS = 100;
 
 	private ThreadPoolExecutor mLargeDecoderThreadPool;
 	private ArrayBlockingQueue<Runnable> mLargeDecoderQueue;
-	private static final int THREAD_POOL_LARGE_DECODER_CORE_SIZE = 1;
-	private static final int THREAD_POOL_LARGE_DECODER_MAX_SIZE = 1;
+	private static final int THREAD_POOL_LARGE_DECODER_CORE_SIZE = 3;
+	private static final int THREAD_POOL_LARGE_DECODER_MAX_SIZE = 3;
 	private static final int THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS = 100;
 
 	private String mHttpDiskCacheName;
@@ -108,13 +105,13 @@ public class ImageLoader {
 				THREAD_POOL_MAX_SIZE, THREAD_POOL_KEEP_ALIVE_IN_SECONDS,
 				TimeUnit.MILLISECONDS, mQueue);
 
-		// mLargeDecoderQueue = new ArrayBlockingQueue<Runnable>(10000, true);
-		//
-		// mLargeDecoderThreadPool = new ThreadPoolExecutor(
-		// THREAD_POOL_LARGE_DECODER_CORE_SIZE,
-		// THREAD_POOL_LARGE_DECODER_MAX_SIZE,
-		// THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS,
-		// TimeUnit.MILLISECONDS, mLargeDecoderQueue);
+		mLargeDecoderQueue = new ArrayBlockingQueue<Runnable>(800, true);
+
+		mLargeDecoderThreadPool = new ThreadPoolExecutor(
+				THREAD_POOL_LARGE_DECODER_CORE_SIZE,
+				THREAD_POOL_LARGE_DECODER_MAX_SIZE,
+				THREAD_POOL_LARGE_DECODER_KEEP_ALIVE_IN_SECONDS,
+				TimeUnit.MILLISECONDS, mLargeDecoderQueue);
 	}
 
 	public void setExitTasksEarly(boolean pExitTasksEarly) {
@@ -131,8 +128,8 @@ public class ImageLoader {
 				mTasks.get(i).detachImageView();
 			if (mTasks.size() > i)
 				mQueue.remove(mTasks.get(i));
-			// if (mTasks.size() > i)
-			// mLargeDecoderQueue.remove(mTasks.get(i));
+			if (mTasks.size() > i)
+				mLargeDecoderQueue.remove(mTasks.get(i));
 		}
 
 		for (int i = mTasks.size() - 1; i >= 0; i--) {
@@ -176,7 +173,7 @@ public class ImageLoader {
 		pTask.detachImageView();
 		mTasks.remove(pTask);
 		mQueue.remove(pTask);
-		// mLargeDecoderQueue.remove(pTask);
+		mLargeDecoderQueue.remove(pTask);
 	}
 
 	/** Flushe's a URL from the memory cache */
@@ -237,6 +234,14 @@ public class ImageLoader {
 
 		// sort the map highest index first
 		ArrayList<String> urls = Utils.SortUrlsHighIndexFirst(pLoadLevelMap);
+		// make sure none are null
+		for (String url : urls) {
+			if (url == null) {
+				Log.e("PhotoHub", "Image URL null!");
+				pListener.onImageLoadFailed(-1);
+				return;
+			}
+		}
 
 		ArrayList<BitmapLevelListAsyncTask> runningTasks = new ArrayList<ImageLoader.BitmapLevelListAsyncTask>();
 
@@ -287,9 +292,11 @@ public class ImageLoader {
 							pLoadLevelMap.get(url), cancellable, pListener);
 				}
 
+				// IMPORTANT TODO: calling execute while the BUFFER IS FULL WILL
+				// BLOCK THIS THREAD
 				// start running the new task
 				if (cancellable) {
-					newTask.executeOnExecutor(mThreadPool);
+					newTask.executeOnExecutor(mLargeDecoderThreadPool);
 					// if (pListener != null) {
 					// pListener.onImageLoaded(memCacheLevel);
 					// }
@@ -315,7 +322,8 @@ public class ImageLoader {
 			weakReferenceTasks
 					.add(new WeakReference<ImageLoader.BitmapLevelListAsyncTask>(
 							task));
-			task.detachImageView(); // ensure no rogue imageviews are attached to the task
+			task.detachImageView(); // ensure no rogue imageviews are attached
+									// to the task
 			if (pImageView != null) {
 				task.attachImageView(pImageView);
 			}
@@ -469,20 +477,20 @@ public class ImageLoader {
 		}
 	}
 
-	public static DiskLruCache mCache;
-
-	public static DiskLruCache getCache(File pDir) {
-		if (mCache == null) {
-			try {
-				mCache = DiskLruCache.open(pDir, 0, 1,
-						DISK_CACHE_SIZE_IN_MB * 1024 * 1024);
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-		}
-
-		return mCache;
-	}
+	// public static DiskLruCache mCache;
+	//
+	// public static DiskLruCache getCache(File pDir) {
+	// if (mCache == null) {
+	// try {
+	// mCache = DiskLruCache.open(pDir, 0, 1,
+	// DISK_CACHE_SIZE_IN_MB * 1024 * 1024);
+	// } catch (IOException e) {
+	// e.printStackTrace();
+	// }
+	// }
+	//
+	// return mCache;
+	// }
 
 	public int mTaskNums = 0;
 
@@ -715,7 +723,6 @@ public class ImageLoader {
 
 		/** Detaches an ImageView */
 		public void detachImageView() {
-			ImageView reference = mImageViewReference.get();
 			mImageViewReference = new WeakReference<ImageView>(null);
 		}
 

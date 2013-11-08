@@ -5,3 +5,6 @@ gen
 .classpath
 .settings
 proguard.cfg
+build.xml
+local.properties
+ImageSpark.iml

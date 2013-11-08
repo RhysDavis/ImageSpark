@@ -1,5 +1,6 @@
 package com.skripiio.imagespark.util;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -27,17 +28,20 @@ public class BitmapDecoder {
 	public static Bitmap decodeSampledBitmapFromFile(InputStream filename,
 			int reqWidth, int reqHeight) {
 		try {
-
 			// First decode with inJustDecodeBounds=true to check dimensions
 			final BitmapFactory.Options options = new BitmapFactory.Options();
 			options.inJustDecodeBounds = true;
-			BitmapFactory.decodeStream(filename, null, options);
+			byte[] content = Utils.getByteArrayFromInputStream(filename);
+			BitmapFactory.decodeStream(new ByteArrayInputStream(content), null,
+					options);
 
-			try {
-				filename.reset();
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
+			// TODO: filename.reset() throws mark invalidated. should
+			// investigate and go back to filename.reset to avoid OOM
+			// try {
+			// filename.reset();
+			// } catch (IOException e) {
+			// e.printStackTrace();
+			// }
 
 			// Calculate inSampleSize
 			options.inSampleSize = calculateInSampleSize(options, reqWidth,
@@ -45,18 +49,23 @@ public class BitmapDecoder {
 
 			// Decode bitmap with inSampleSize set
 			options.inJustDecodeBounds = false;
-			Bitmap b = BitmapFactory.decodeStream(filename, null, options);
+			Bitmap b = BitmapFactory.decodeStream(new ByteArrayInputStream(
+					content), null, options);
 
 			if (b == null) {
 				System.gc();
-				b = BitmapFactory.decodeStream(filename, null, options);
+				b = BitmapFactory.decodeStream(
+						new ByteArrayInputStream(content), null, options);
 			}
 			return b;
 		} catch (OutOfMemoryError e) {
 			System.gc();
-			// OUT OF MEMORY ERROR
+			// OUT OF MEMORY ERROR try again
 			e.printStackTrace();
 			return decodeSampledBitmapFromFile(filename, reqWidth, reqHeight);
+		} catch (IOException e) {
+			e.printStackTrace();
+			return null;
 		}
 	}
 
